@@ -2,7 +2,6 @@ from setuptools import setup, find_packages
 
 setup(
     name="er-scarecrow-upload",
-    version="0.2.0",
     description="Service for uploading files to Google Drive using a service account",
     long_description="Service for uploading files to Google Drive using a service account",
     author="Ferenc Nandor Janky & Attila Gombos",
@@ -17,6 +16,8 @@ setup(
             "er-scarecrow-fetch-upload=er_scarecrow_upload.fetch_upload:main",
         ],
     },
+    use_scm_version=True,
+    setup_requires=["setuptools_scm"],
     install_requires=[
         "google-api-python-client>=2.90.0",
         "google-auth>=1.5.1",
