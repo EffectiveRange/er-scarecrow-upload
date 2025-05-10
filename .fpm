@@ -1,0 +1,11 @@
+-s python
+-t deb
+--package dist
+--force
+--log warn
+--python-bin python3
+--python-package-name-prefix python3
+--python-disable-dependency google-api-python-client
+--depends python3-googleapi
+--python-disable-dependency pytz
+--depends python3-tz

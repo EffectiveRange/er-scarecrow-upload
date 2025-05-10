@@ -1,17 +1,21 @@
 import os
-import pathlib
-from fabric import Connection  # type: ignore[import]
-import datetime
+from argparse import ArgumentParser
+from datetime import datetime, timedelta, tzinfo
+from logging import Logger
+from pathlib import Path
+from typing import Any, Optional
+
 import pytz
+import retrying
 from context_logger import get_logger
-import retrying  # type: ignore[import]
+from fabric import Connection
 
 from er_scarecrow_upload.common import init_application
 
 APPLICATION = "er-scarecrow-fetch"
 
 
-def log_before_retry(exc):
+def log_before_retry(exc: Any) -> bool:
     # log the exception with traceback
     get_logger(APPLICATION).warning("⚠️  Operation failed, retrying…")
     # returning True means “yes, please retry”
@@ -19,21 +23,23 @@ def log_before_retry(exc):
 
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
-def download_and_archive_files(
-    logger, ssh_alias, remote_directory, local_directory, timezone, timeout, since_days=None
-):
+def download_and_archive_files(logger: Logger, ssh_alias: str, remote_directory: str, local_directory: str,
+                               timezone: tzinfo, timeout: int, since_days: Optional[int] = None) -> Optional[Path]:
     """
     Connects to a remote host using an SSH alias, downloads files matching the current date pattern,
     and archives them into a tar file locally.
-
+    :param logger: Logger instance for logging messages.
     :param ssh_alias: SSH config alias for the remote host.
     :param remote_directory: Directory on the remote server to search for files.
-    :param local_archive_name: Name of the local tar archive to create.
+    :param local_directory: Name of the local directory.
+    :param timezone: Timezone to use for date formatting.
+    :param timeout: Timeout for SSH connection in seconds.
+    :param since_days: Number of days to look back for files.
     """
     # Get the current date in the format %Y-%m-%d
-    start = datetime.datetime.now(timezone)
+    start = datetime.now(timezone)
     # TODO parametrize the since
-    current_date = (start if since_days is None else (start - datetime.timedelta(days=since_days))).strftime("%Y-%m-%d")
+    current_date = (start if since_days is None else (start - timedelta(days=since_days))).strftime("%Y-%m-%d")
     dest_date = start.strftime("%Y-%m-%d_%H-%M-%S")
     pattern = f"{current_date}T"
 
@@ -46,6 +52,7 @@ def download_and_archive_files(
 
         if not files_to_download:
             logger.info(f"⚠️  No files found matching the pattern on host '{ssh_alias}'.")
+            return None
         else:
             archive_file = f"/tmp/{ssh_alias}_{current_date}.tar"
             dest_archive_file = f"{ssh_alias}_{current_date}_{dest_date}.tar"
@@ -55,14 +62,14 @@ def download_and_archive_files(
                 hide=True,
             )
             logger.info(f"ℹ️  archive file is {archive_file}")
-            os.makedirs(pathlib.Path(local_directory) / ssh_alias, exist_ok=True)
-            dest_file = pathlib.Path(local_directory) / ssh_alias / dest_archive_file
+            os.makedirs(Path(local_directory) / ssh_alias, exist_ok=True)
+            dest_file = Path(local_directory) / ssh_alias / dest_archive_file
             conn.get(archive_file, str(dest_file))
             logger.info(f"✅  Downloaded archive file: {archive_file} to {str(dest_file)}")
             return dest_file
 
 
-def get_parser(parser):
+def get_parser(parser: ArgumentParser) -> ArgumentParser:
     parser.add_argument(
         "--source",
         type=str,
@@ -92,7 +99,7 @@ def get_parser(parser):
     return parser
 
 
-def main():
+def main() -> None:
     # Set up argument parsing
     args, logger = init_application(
         "er-scarecrow-fetch",

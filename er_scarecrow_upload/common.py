@@ -1,11 +1,13 @@
 import argparse
+from logging import Logger
+from typing import Any
 
 from context_logger import get_logger, setup_logging
 
 
-def init_application(app_name, description, *parser_inits):
+def init_application(app_name: str, description: str, *parser_inits: Any) -> tuple[argparse.Namespace, Logger]:
     # Set up argument parsing
-    parser = argparse.ArgumentParser(description="description", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(description=description, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument(
         "--log-file",
         type=str,

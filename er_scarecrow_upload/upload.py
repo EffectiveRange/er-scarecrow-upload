@@ -1,14 +1,16 @@
+
 import json
 import os
 import pathlib
-from google.oauth2 import service_account
-from googleapiclient.discovery import build  # type: ignore[import]
-from googleapiclient.http import MediaFileUpload, HttpError  # type: ignore[import]
-import argparse
-import tempfile
 import tarfile
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+import tempfile
+from argparse import ArgumentParser
 from typing import Any, Dict, List, Optional
+
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, HttpError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from er_scarecrow_upload.common import init_application
 
@@ -50,7 +52,7 @@ class DriveService:
         self.folder_mapping_path: str = kwargs.get("folder_mapping") or DEFAULT_FOLDER_MAPPING
         self.dry_run: bool = kwargs.get("dry_run", False)
         self.logger: Any = logger
-        self.creds = service_account.Credentials.from_service_account_file(
+        self.creds = Credentials.from_service_account_file(  # type: ignore
             self.service_account_file, scopes=["https://www.googleapis.com/auth/drive"]
         )
         self.drive = build("drive", "v3", credentials=self.creds)
@@ -59,7 +61,7 @@ class DriveService:
         self.root_id: str = self.folder_mapping["root"]
         self.root_folder: Dict[str, str] = self.verify_shared_drive()
         self.drive_id: str = self.root_folder["driveId"]
-        self.folder_cache: Dict[tuple, Dict[str, str]] = {}
+        self.folder_cache: Dict[tuple[str, str], Dict[str, str]] = {}
 
     def verify_shared_drive(self) -> Dict[str, str]:
         """
@@ -68,7 +70,8 @@ class DriveService:
         Returns:
             Dict[str, str]: Metadata of the verified shared drive folder.
         """
-        folder = self.drive.files().get(fileId=self.root_id, fields="id,name,driveId", supportsAllDrives=True).execute()
+        folder: Dict[str, str] = (self.drive.files()
+                                  .get(fileId=self.root_id, fields="id,name,driveId", supportsAllDrives=True).execute())
         self.logger.debug("✅ Shared Drive folder accessible", folder=folder["name"], id=folder["id"])
         return folder
 
@@ -100,7 +103,8 @@ class DriveService:
         if self.dry_run:
             self.logger.info("ℹ️  Dry run create", **kwargs)
             return {"id": "dry_run", "name": kwargs["body"]["name"]}
-        return self.drive.files().create(**kwargs).execute()
+        metadata: Dict[str, Any] = self.drive.files().create(**kwargs).execute()
+        return metadata
 
     @retry(
         retry=retry_if_exception(is_retryable_http_error),
@@ -122,7 +126,8 @@ class DriveService:
         if self.dry_run:
             self.logger.info("ℹ️  Dry run update", **efile)
             return {"id": "dry_run", "name": kwargs["body"]["name"]}
-        return self.drive.files().update(fileId=efile["id"], **kwargs).execute()
+        metadata: Dict[str, Any] = self.drive.files().update(fileId=efile["id"], **kwargs).execute()
+        return metadata
 
     def get_or_create_subfolders(self, parent: Dict[str, str], *paths: str) -> Dict[str, str]:
         """
@@ -163,7 +168,8 @@ class DriveService:
         return parents[-1]
 
     def upload_hierarchy(
-        self, local_root: pathlib.Path, folder: Dict[str, str], local_rel_directory: Optional[os.PathLike] = None
+            self, local_root: pathlib.Path, folder: Dict[str, str],
+            local_rel_directory: Optional[os.PathLike[Any]] = None
     ) -> None:
         """
         Upload a directory hierarchy to Google Drive.
@@ -203,7 +209,7 @@ class DriveService:
     def archive_and_upload(self, local_path: pathlib.Path, folder: Dict[str, str]) -> None:
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            tf_path = pathlib.Path(temp_dir) / local_path.name
+            tf_path = (pathlib.Path(temp_dir) / local_path.name).with_suffix(".tar")
             with tarfile.open(tf_path, "w") as tf:
                 tf.add(local_path, arcname=local_path.name)
                 self.upload_file(tf_path, folder)
@@ -235,19 +241,15 @@ class DriveService:
         Returns:
             List[Dict[str, str]]: List of files or folders.
         """
-        return (
-            self.drive.files()
-            .list(
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-                corpora="drive",
-                spaces="drive",
-                driveId=self.drive_id,
-                **kwargs,
-            )
-            .execute()
-            .get("files", [])
-        )
+        files: List[Dict[str, str]] = self.drive.files().list(
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora="drive",
+            spaces="drive",
+            driveId=self.drive_id,
+            **kwargs,
+        ).execute().get("files", [])
+        return files
 
     def get_subfolder(self, folder_id: str, name: str) -> Optional[Dict[str, str]]:
         """
@@ -328,9 +330,9 @@ class DriveService:
         return files[0] if files else None
 
 
-def main():
+def main() -> None:
     # Set up argument parsing
-    parser = argparse.ArgumentParser(description="Upload a file to a Google Drive folder using a service account.")
+    parser = ArgumentParser(description="Upload a file to a Google Drive folder using a service account.")
     args, logger = init_application(
         "er-scarecrow-upload",
         "Upload files to Google Drive",
@@ -357,8 +359,7 @@ def main():
             parser.error("Either --upload-archive or --upload-directory or --upload-file must be specified.")
 
 
-def get_parser(parser: argparse.ArgumentParser):
-
+def get_parser(parser: ArgumentParser) -> ArgumentParser:
     parser.add_argument(
         "-s",
         "--service-account-file",

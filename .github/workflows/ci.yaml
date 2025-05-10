@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: [v*.*.*]
+
+  pull_request:
+    branches: [ "main" ]
+    types:
+      - synchronize
+      - opened
+      - reopened
+
+jobs:
+  call_ci:
+    uses: EffectiveRange/ci-workflows/.github/workflows/python-ci.yaml@v5
+    with:
+      test-enabled: false
+      package-architecture: '["arm64", "amd64"]'
+      package-distribution: '["bookworm"]'
+      
