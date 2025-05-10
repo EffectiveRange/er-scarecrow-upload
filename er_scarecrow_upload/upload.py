@@ -55,7 +55,7 @@ class DriveService:
         self.creds = Credentials.from_service_account_file(  # type: ignore
             self.service_account_file, scopes=["https://www.googleapis.com/auth/drive"]
         )
-        self.drive = build("drive", "v3", credentials=self.creds)
+        self.drive = build("drive", "v3", credentials=self.creds, cache_discovery=False)
         with open(self.folder_mapping_path) as f:
             self.folder_mapping = json.load(f)
         self.root_id: str = self.folder_mapping["root"]
