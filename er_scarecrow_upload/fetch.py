@@ -1,4 +1,5 @@
 import os
+import subprocess
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, tzinfo
 from logging import Logger
@@ -23,8 +24,35 @@ def log_before_retry(exc: Any) -> bool:
 
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
-def download_and_archive_files(logger: Logger, ssh_alias: str, remote_directory: str, local_directory: str,
-                               timezone: tzinfo, timeout: int, since_days: Optional[int] = None) -> Optional[Path]:
+def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory: str,
+                               local_directory: str, collect_directory: str, time_window: list[datetime]) -> None:
+    with Connection(ssh_alias, connect_timeout=timeout) as connection:
+        source_dirs = [(Path(remote_directory)
+                        / f"{time.year}-{time.month:02d}-{time.day:02d}"
+                        / f"{time.hour:02d}"
+                        / f"{time.minute:02d}_p200") for time in time_window]
+
+        connection.run(f"sudo mkdir -p {collect_directory}")
+
+        for source_dir in source_dirs:
+            logger.info(f"ℹ️  Collecting files from {source_dir} to {collect_directory}")
+            connection.run(f"cd {source_dir} && find . -type f -print0 | xargs -0 sudo ln -f -t {collect_directory}")
+
+    os.makedirs(local_directory, exist_ok=True)
+
+    logger.info(f"ℹ️  Downloading files from {collect_directory} to {local_directory}")
+    command = ["rsync", "-avz", f"{ssh_alias}:{collect_directory}/", local_directory]
+    subprocess.run(command, check=True)
+
+    connection.run(f"sudo rm -rf {collect_directory}")
+    logger.info(f"✅  Downloaded files from {remote_directory} to {local_directory} "
+                f"between {time_window[0]} and {time_window[-1]}")
+
+
+@retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
+def download_and_archive_files(logger: Logger, ssh_alias: str, timeout: int,
+                               remote_directory: str, local_directory: str,
+                               timezone: tzinfo, since_days: Optional[int] = None) -> Optional[Path]:
     """
     Connects to a remote host using an SSH alias, downloads files matching the current date pattern,
     and archives them into a tar file locally.
@@ -77,10 +105,26 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
         help="List of SSH config aliases for the remote hosts (defined in ~/.ssh/config).",
     )
     parser.add_argument(
+        "--archive",
+        action="store_true",
+        help="Download and archive files from the remote host",
+    )
+    parser.add_argument(
+        "--collect",
+        action="store_true",
+        help="Collect files from the remote host and download them",
+    )
+    parser.add_argument(
         "--remote-directory",
         type=str,
         help="Directory on the remote server to search for files.",
         default="/var/local/scarecrow/detected/",
+    )
+    parser.add_argument(
+        "--collect-directory",
+        type=str,
+        help="Temporary directory on the remote server to collect for files.",
+        default="/var/local/scarecrow/collect/",
     )
     parser.add_argument(
         "--local-directory",
@@ -96,6 +140,11 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
     )
     parser.add_argument("--since-days", type=int, default=None, help="Number of days to look back for files.")
     parser.add_argument("--timeout", type=int, default=30, help="Timeout for SSH connection in seconds.")
+    parser.add_argument(
+        "--time-window",
+        type=str,
+        help="Comma separated list of timestamps to collect files from, in the format 'YYYY-MM-DDTHH:MM'.",
+    )
     return parser
 
 
@@ -108,15 +157,26 @@ def main() -> None:
     )
     # Iterate over all specified SSH aliases
     for ssh_alias in args.source:
-        logger.debug(f"ℹ️   Processing host '{ssh_alias}'")
-        download_and_archive_files(
-            logger,
-            ssh_alias,
-            args.remote_directory,
-            args.local_directory,
-            pytz.timezone(args.timezone),
-            args.timeout,
-        )
+        logger.info(f"ℹ️   Processing host '{ssh_alias}'")
+        if args.archive:
+            download_and_archive_files(
+                logger,
+                ssh_alias,
+                args.timeout,
+                args.remote_directory,
+                args.local_directory,
+                pytz.timezone(args.timezone)
+            )
+        elif args.collect:
+            time_window = [datetime.fromisoformat(timestamp) for timestamp in args.time_window.split(",")]
+            collect_and_download_files(
+                logger,
+                ssh_alias,
+                args.timeout,
+                args.remote_directory,
+                args.local_directory,
+                args.collect_directory,
+                time_window)
 
 
 if __name__ == "__main__":
