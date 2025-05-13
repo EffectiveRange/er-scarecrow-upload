@@ -206,16 +206,16 @@ class DriveService:
                 tf.extractall(path=temp_dir_path)
             self.upload_hierarchy(temp_dir_path, folder)
 
-    def archive_and_upload(self, local_path: pathlib.Path, folder: Dict[str, str]) -> None:
-
+    def archive_and_upload(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory() as temp_dir:
             tf_path = (pathlib.Path(temp_dir) / local_path.name).with_suffix(".tar")
             with tarfile.open(tf_path, "w") as tf:
                 tf.add(local_path, arcname=local_path.name)
-                self.upload_file(tf_path, folder)
-                self.logger.debug("Uploaded archive", name=str(tf_path), id=folder["id"])
+                metadata = self.upload_file(tf_path, folder)
+                self.logger.debug("Uploaded archive", archive=str(tf_path), metadata=metadata)
+                return metadata
 
-    def upload_file(self, local_path: pathlib.Path, folder: Dict[str, str]) -> None:
+    def upload_file(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
         """
         Upload a file to Google Drive.
 
@@ -223,7 +223,7 @@ class DriveService:
             local_path (pathlib.Path): Path to the local file.
             folder (Dict[str, str]): Metadata of the destination folder in Google Drive.
         """
-        self.create_or_update_file(folder, local_path)
+        return self.create_or_update_file(folder, local_path)
 
     @retry(
         retry=retry_if_exception(is_retryable_http_error),

@@ -26,6 +26,12 @@ def log_before_retry(exc: Any) -> bool:
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
 def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory: str,
                                local_directory: str, collect_directory: str, time_window: list[datetime]) -> None:
+    if len(time_window) == 2:
+        start_time = min(time_window)
+        end_time = max(time_window)
+        time_window = [start_time + timedelta(minutes=i) for i in
+                       range(int((end_time - start_time).total_seconds() // 60) + 1)]
+
     with Connection(ssh_alias, connect_timeout=timeout) as connection:
         source_dirs = [(Path(remote_directory)
                         / f"{time.year}-{time.month:02d}-{time.day:02d}"
