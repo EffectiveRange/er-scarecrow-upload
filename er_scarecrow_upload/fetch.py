@@ -171,7 +171,8 @@ def main() -> None:
                 args.timeout,
                 args.remote_directory,
                 args.local_directory,
-                pytz.timezone(args.timezone)
+                pytz.timezone(args.timezone),
+                args.since_days
             )
         elif args.collect:
             time_window = [datetime.fromisoformat(timestamp) for timestamp in args.time_window.split(",")]
