@@ -34,7 +34,7 @@ def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, rem
                        range(int((end_time - start_time).total_seconds() // 60) + 1)]
 
     with Connection(ssh_alias, connect_timeout=timeout) as connection:
-        tz_postfix = f"{'p' if tz_offset >= 0 else 'm'}{abs(tz_offset):04d}"
+        tz_postfix = f"{'p' if tz_offset >= 0 else 'm'}{abs(tz_offset):02d}00"
         source_dirs = [(Path(remote_directory)
                         / f"{time.year}-{time.month:02d}-{time.day:02d}"
                         / f"{time.hour:02d}"
