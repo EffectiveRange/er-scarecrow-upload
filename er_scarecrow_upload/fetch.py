@@ -25,7 +25,8 @@ def log_before_retry(exc: Any) -> bool:
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
 def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory: str,
-                               local_directory: str, collect_directory: str, time_window: list[datetime]) -> None:
+                               local_directory: str, collect_directory: str, time_window: list[datetime],
+                               tz_offset: int = 0) -> None:
     if len(time_window) == 2:
         start_time = min(time_window)
         end_time = max(time_window)
@@ -33,16 +34,17 @@ def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, rem
                        range(int((end_time - start_time).total_seconds() // 60) + 1)]
 
     with Connection(ssh_alias, connect_timeout=timeout) as connection:
+        tz_postfix = f"{'p' if tz_offset >= 0 else 'm'}{abs(tz_offset):04d}"
         source_dirs = [(Path(remote_directory)
                         / f"{time.year}-{time.month:02d}-{time.day:02d}"
                         / f"{time.hour:02d}"
-                        / f"{time.minute:02d}_p0200") for time in time_window]
+                        / f"{time.minute:02d}_{tz_postfix}") for time in time_window]
 
         connection.run(f"sudo mkdir -p {collect_directory}")
 
         for source_dir in source_dirs:
             logger.info(f"ℹ️  Collecting files from {source_dir} to {collect_directory}")
-            connection.run(f"cd {source_dir} && find . -type f -print0 | xargs -0 sudo ln -f -t {collect_directory}")
+            connection.run(f"cd {source_dir} && sudo find . -type f -exec cp -t {collect_directory} {{}} +")
 
     os.makedirs(local_directory, exist_ok=True)
 
