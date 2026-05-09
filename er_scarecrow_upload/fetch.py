@@ -1,7 +1,7 @@
 import os
 import subprocess
 from argparse import ArgumentParser
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, tzinfo, timezone
 from logging import Logger
 from pathlib import Path
 from typing import Any, Optional
@@ -35,10 +35,14 @@ def collect_and_download_files(logger: Logger, ssh_alias: str, timeout: int, rem
 
     with Connection(ssh_alias, connect_timeout=timeout) as connection:
         tz_postfix = f"{'p' if tz_offset >= 0 else 'm'}{abs(tz_offset):02d}00"
-        source_dirs = [(Path(remote_directory)
-                        / f"{time.year}-{time.month:02d}-{time.day:02d}"
-                        / f"{time.hour:02d}"
-                        / f"{time.minute:02d}_{tz_postfix}") for time in time_window]
+        source_dirs = [
+            (Path(remote_directory)
+             / f"{offset_time.year}-{offset_time.month:02d}-{offset_time.day:02d}"
+             / f"{offset_time.hour:02d}"
+             / f"{offset_time.minute:02d}_{tz_postfix}")
+            for time in time_window
+            for offset_time in [time.astimezone(timezone(timedelta(hours=tz_offset)))]
+        ]
 
         connection.run(f"sudo mkdir -p {collect_directory}")
 
