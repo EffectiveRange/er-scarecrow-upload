@@ -1,4 +1,6 @@
 import os
+import re
+import shlex
 import subprocess
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, tzinfo, timezone
@@ -15,12 +17,126 @@ from er_scarecrow_upload.common import init_application
 
 APPLICATION = "er-scarecrow-fetch"
 
+FILENAME_TIMESTAMP_PATTERN = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})"
+    r"T(?P<hour>\d{2})_(?P<minute>\d{2})_(?P<second>\d{2})"
+    r"\.(?P<microsecond>\d+)"
+    r"(?P<tz>[pm]\d{4})"
+)
+
 
 def log_before_retry(exc: Any) -> bool:
     # log the exception with traceback
     get_logger(APPLICATION).warning("⚠️  Operation failed, retrying…")
     # returning True means “yes, please retry”
     return True
+
+
+def _timezone_postfix_from_datetime(time_value: datetime) -> str:
+    offset = time_value.utcoffset()
+    if offset is None:
+        raise ValueError("Timezone-aware datetime values are required for --collect time ranges")
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "p" if total_minutes >= 0 else "m"
+    abs_minutes = abs(total_minutes)
+    return f"{sign}{abs_minutes // 60:02d}{abs_minutes % 60:02d}"
+
+
+def _parse_filename_timestamp(filename: str) -> Optional[datetime]:
+    match = FILENAME_TIMESTAMP_PATTERN.match(filename)
+    if not match:
+        return None
+
+    tz_chunk = match.group("tz")
+    sign = 1 if tz_chunk[0] == "p" else -1
+    hours = int(tz_chunk[1:3])
+    minutes = int(tz_chunk[3:5])
+    file_timezone = timezone(sign * timedelta(hours=hours, minutes=minutes))
+    microsecond = int(match.group("microsecond")[:6].ljust(6, "0"))
+
+    return datetime(
+        year=int(match.group("date")[0:4]),
+        month=int(match.group("date")[5:7]),
+        day=int(match.group("date")[8:10]),
+        hour=int(match.group("hour")),
+        minute=int(match.group("minute")),
+        second=int(match.group("second")),
+        microsecond=microsecond,
+        tzinfo=file_timezone,
+    )
+
+
+@retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
+def collect_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory: str, local_directory: str,
+                  collect_directory: str, start_time: datetime, end_time: datetime) -> None:
+    if start_time.tzinfo is None or start_time.utcoffset() is None:
+        raise ValueError("start_time must include timezone information")
+    if end_time.tzinfo is None or end_time.utcoffset() is None:
+        raise ValueError("end_time must include timezone information")
+
+    range_start, range_end = sorted((start_time, end_time))
+    tz_postfix = _timezone_postfix_from_datetime(range_start)
+    if _timezone_postfix_from_datetime(range_end) != tz_postfix:
+        raise ValueError("start_time and end_time must have the same UTC offset for directory matching")
+
+    range_start_utc = range_start.astimezone(timezone.utc)
+    range_end_utc = range_end.astimezone(timezone.utc)
+
+    start_minute = range_start.replace(second=0, microsecond=0)
+    end_minute = range_end.replace(second=0, microsecond=0)
+    minute_count = int((end_minute - start_minute).total_seconds() // 60) + 1
+    minute_window = [start_minute + timedelta(minutes=i) for i in range(minute_count)]
+
+    with Connection(ssh_alias, connect_timeout=timeout) as connection:
+        connection.run(f"sudo mkdir -p {shlex.quote(collect_directory)}")
+        try:
+            collected_count = 0
+            for minute in minute_window:
+                source_dir = (
+                    Path(remote_directory)
+                    / f"{minute.year}-{minute.month:02d}-{minute.day:02d}"
+                    / f"{minute.hour:02d}"
+                    / f"{minute.minute:02d}_{tz_postfix}"
+                )
+                list_result = connection.run(
+                    f"cd {shlex.quote(str(source_dir))} && find . -maxdepth 1 -mindepth 1 -type f -printf '%f\\n'",
+                    hide=True,
+                    warn=True,
+                )
+                if not list_result.ok:
+                    logger.debug(f"ℹ️  Skipping missing directory {source_dir}")
+                    continue
+
+                selected_files: list[str] = []
+                for filename in list_result.stdout.splitlines():
+                    file_time = _parse_filename_timestamp(filename)
+                    if file_time is None:
+                        continue
+                    file_time_utc = file_time.astimezone(timezone.utc)
+                    if range_start_utc <= file_time_utc <= range_end_utc:
+                        selected_files.append(filename)
+
+                if not selected_files:
+                    continue
+
+                logger.info(f"ℹ️  Collecting {len(selected_files)} files from {source_dir} to {collect_directory}")
+                quoted_files = " ".join(shlex.quote(file_name) for file_name in selected_files)
+                connection.run(
+                    f"cd {shlex.quote(str(source_dir))} && sudo cp -t {shlex.quote(collect_directory)} {quoted_files}"
+                )
+                collected_count += len(selected_files)
+
+            os.makedirs(local_directory, exist_ok=True)
+            logger.info(f"ℹ️  Downloading files from {collect_directory} to {local_directory}")
+            command = ["rsync", "-avz", f"{ssh_alias}:{collect_directory}/", local_directory]
+            subprocess.run(command, check=True)
+        finally:
+            connection.run(f"sudo rm -rf {shlex.quote(collect_directory)}", warn=True)
+
+    logger.info(
+        f"✅  Downloaded {collected_count} files from {remote_directory} to {local_directory} "
+        f"between {range_start.isoformat()} and {range_end.isoformat()}"
+    )
 
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
@@ -182,14 +298,18 @@ def main() -> None:
             )
         elif args.collect:
             time_window = [datetime.fromisoformat(timestamp) for timestamp in args.time_window.split(",")]
-            collect_and_download_files(
+            if len(time_window) < 2:
+                raise ValueError("--time-window for --collect must include start and end timestamps")
+            collect_files(
                 logger,
                 ssh_alias,
                 args.timeout,
                 args.remote_directory,
                 args.local_directory,
                 args.collect_directory,
-                time_window)
+                min(time_window),
+                max(time_window),
+            )
 
 
 if __name__ == "__main__":
