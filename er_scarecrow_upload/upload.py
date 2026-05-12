@@ -209,11 +209,14 @@ class DriveService:
     def archive_and_upload(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory() as temp_dir:
             tf_path = (pathlib.Path(temp_dir) / local_path.name).with_suffix(".tar.gz")
+
             with tarfile.open(tf_path, "w:gz") as tf:
                 tf.add(local_path, arcname=local_path.name)
-                metadata = self.upload_file(tf_path, folder)
-                self.logger.debug("Uploaded archive", archive=str(tf_path), metadata=metadata)
-                return metadata
+
+            metadata = self.upload_file(tf_path, folder)
+            self.logger.debug("Uploaded archive", archive=str(tf_path), metadata=metadata)
+
+        return metadata
 
     def upload_file(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
         """
