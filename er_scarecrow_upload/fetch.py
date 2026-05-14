@@ -66,6 +66,41 @@ def _parse_filename_timestamp(filename: str) -> Optional[datetime]:
     )
 
 
+@retrying.retry(stop_max_attempt_number=3, wait_fixed=10000, retry_on_exception=log_before_retry)
+def collect_event_files(logger: Logger, ssh_alias: str, event_id: str, timeout: int,
+                        remote_directory: str, local_directory: str) -> None:
+    with Connection(ssh_alias, connect_timeout=timeout) as connection:
+        pattern = f"*{event_id}*"
+        result = connection.run(
+            f"find {shlex.quote(remote_directory)} -maxdepth 1 -type f -name {shlex.quote(pattern)}",
+            hide=True,
+            warn=True,
+        )
+
+        if not result or not result.ok or not result.stdout.strip():
+            logger.warning(f"⚠️  No files found for event ID '{event_id}' on host '{ssh_alias}'")
+            return
+
+        remote_file_paths = result.stdout.splitlines()
+        logger.info(f"ℹ️  Found {len(remote_file_paths)} file(s) for event ID '{event_id}' on host '{ssh_alias}'")
+
+        os.makedirs(local_directory, exist_ok=True)
+
+        for remote_file_path in remote_file_paths:
+            local_path = Path(local_directory) / Path(remote_file_path).name
+            logger.info(f"ℹ️  Downloading file '{remote_file_path}' from host '{ssh_alias}' to '{local_path}'...")
+            command = [
+                "rsync",
+                "-avz",
+                "--partial",
+                "--append-verify",
+                f"{ssh_alias}:{remote_file_path}",
+                str(local_path),
+            ]
+            subprocess.run(command, check=True)
+            logger.info(f"✅  Downloaded file {remote_file_path} from host '{ssh_alias}' to {local_path}")
+
+
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
 def collect_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory: str, local_directory: str,
                   collect_directory: str, start_time: datetime, end_time: datetime) -> None:
@@ -93,10 +128,10 @@ def collect_files(logger: Logger, ssh_alias: str, timeout: int, remote_directory
             collected_count = 0
             for minute in minute_window:
                 source_dir = (
-                    Path(remote_directory)
-                    / f"{minute.year}-{minute.month:02d}-{minute.day:02d}"
-                    / f"{minute.hour:02d}"
-                    / f"{minute.minute:02d}_{tz_postfix}"
+                        Path(remote_directory)
+                        / f"{minute.year}-{minute.month:02d}-{minute.day:02d}"
+                        / f"{minute.hour:02d}"
+                        / f"{minute.minute:02d}_{tz_postfix}"
                 )
                 list_result = connection.run(
                     f"cd {shlex.quote(str(source_dir))} && find . -maxdepth 1 -mindepth 1 -type f -printf '%f\\n'",
@@ -243,6 +278,11 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
         help="Collect files from the remote host and download them",
     )
     parser.add_argument(
+        "--event-id",
+        type=str,
+        help="Download file(s) matching this event ID from the top level of --remote-directory.",
+    )
+    parser.add_argument(
         "--remote-directory",
         type=str,
         help="Directory on the remote server to search for files.",
@@ -271,7 +311,10 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
     parser.add_argument(
         "--time-window",
         type=str,
-        help="Comma separated list of timestamps to collect files from, in the format 'YYYY-MM-DDTHH:MM'.",
+        help=(
+            "Comma separated start,end timestamps for --collect. "
+            "Use timezone-aware ISO values, e.g. 'YYYY-MM-DDTHH:MM+01:00,YYYY-MM-DDTHH:MM+01:00'."
+        ),
     )
     return parser
 
@@ -286,7 +329,16 @@ def main() -> None:
     # Iterate over all specified SSH aliases
     for ssh_alias in args.source:
         logger.info(f"ℹ️   Processing host '{ssh_alias}'")
-        if args.archive:
+        if args.event_id:
+            collect_event_files(
+                logger,
+                ssh_alias,
+                args.event_id,
+                args.timeout,
+                args.remote_directory,
+                args.local_directory,
+            )
+        elif args.archive:
             download_and_archive_files(
                 logger,
                 ssh_alias,
@@ -297,9 +349,13 @@ def main() -> None:
                 args.since_days
             )
         elif args.collect:
+            if not args.time_window:
+                raise ValueError("--time-window is required when using --collect")
             time_window = [datetime.fromisoformat(timestamp) for timestamp in args.time_window.split(",")]
             if len(time_window) < 2:
                 raise ValueError("--time-window for --collect must include start and end timestamps")
+            if any(time_value.tzinfo is None or time_value.utcoffset() is None for time_value in time_window):
+                raise ValueError("--time-window timestamps must include timezone offsets, e.g. +01:00")
             collect_files(
                 logger,
                 ssh_alias,
@@ -310,6 +366,8 @@ def main() -> None:
                 min(time_window),
                 max(time_window),
             )
+        else:
+            raise ValueError("Specify one mode: --event-id, --archive, or --collect")
 
 
 if __name__ == "__main__":
