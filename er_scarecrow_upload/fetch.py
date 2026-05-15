@@ -89,6 +89,7 @@ def collect_event_files(logger: Logger, ssh_alias: str, event_id: str, timeout: 
         for remote_file_path in remote_file_paths:
             local_path = Path(local_directory) / Path(remote_file_path).name
             logger.info(f"ℹ️  Downloading file '{remote_file_path}' from host '{ssh_alias}' to '{local_path}'...")
+
             command = [
                 "rsync",
                 "-avz",
@@ -98,7 +99,9 @@ def collect_event_files(logger: Logger, ssh_alias: str, event_id: str, timeout: 
                 str(local_path),
             ]
             subprocess.run(command, check=True)
+
             logger.info(f"✅  Downloaded file {remote_file_path} from host '{ssh_alias}' to {local_path}")
+            connection.run(f"sudo rm -- {shlex.quote(remote_file_path)}", warn=True)
 
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
