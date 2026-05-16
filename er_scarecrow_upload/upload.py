@@ -1,10 +1,9 @@
-
 import json
 import os
-import pathlib
 import tarfile
 import tempfile
 from argparse import ArgumentParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from google.oauth2.service_account import Credentials
@@ -168,49 +167,51 @@ class DriveService:
         return parents[-1]
 
     def upload_hierarchy(
-            self, local_root: pathlib.Path, folder: Dict[str, str],
+            self, local_root: Path, folder: Dict[str, str],
             local_rel_directory: Optional[os.PathLike[Any]] = None
     ) -> None:
         """
         Upload a directory hierarchy to Google Drive.
 
         Args:
-            local_root (pathlib.Path): Local root directory.
+            local_root (Path): Local root directory.
             folder (Dict[str, str]): Metadata of the destination folder in Google Drive.
             local_rel_directory (str): Relative path to the local directory to upload.
         """
-        local_root = pathlib.Path(local_root)
-        local_dir = pathlib.Path(local_rel_directory or ".")
+        local_root = Path(local_root)
+        local_dir = Path(local_rel_directory or ".")
         to_upload = local_root / local_dir if not local_dir.is_absolute() else local_dir
         self.logger.warn(f"{to_upload}")
         for root, dirs, files in os.walk(to_upload):
             for file in files:
-                self.logger.warn(f"{pathlib.Path(root).resolve()}")
+                self.logger.warn(f"{Path(root).resolve()}")
                 parent = self.get_or_create_subfolders(
-                    folder, *pathlib.Path(root).resolve().relative_to(local_root).parts
+                    folder, *Path(root).resolve().relative_to(local_root).parts
                 )
-                uploaded_file = self.create_or_update_file(parent, pathlib.Path(root) / file)
-                self.logger.debug("Uploaded file", name=str(pathlib.Path(root) / file), id=uploaded_file["id"])
+                uploaded_file = self.create_or_update_file(parent, Path(root) / file)
+                self.logger.debug("Uploaded file", name=str(Path(root) / file), id=uploaded_file["id"])
 
-    def upload_hierarchy_from_archive(self, archive_file: pathlib.Path, folder: Dict[str, str]) -> None:
+    def upload_hierarchy_from_archive(self, archive_file: Path, folder: Dict[str, str]) -> None:
         """
         Extract and upload an archive file to Google Drive.
 
         Args:
-            archive_file (pathlib.Path): Path to the archive file.
+            archive_file (Path): Path to the archive file.
             folder (Dict[str, str]): Metadata of the destination folder in Google Drive.
         """
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_dir_path = pathlib.Path(temp_dir)
+            temp_dir_path = Path(temp_dir)
             with tarfile.open(archive_file) as tf:
                 tf.extractall(path=temp_dir_path)
             self.upload_hierarchy(temp_dir_path, folder)
 
-    def archive_and_upload(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
+    def archive_and_upload(self, local_path: Path, folder: Dict[str, str], gzip: bool = False) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory() as temp_dir:
-            tf_path = (pathlib.Path(temp_dir) / local_path.name).with_suffix(".tar.gz")
+            extension = ".tar.gz" if gzip else ".tar"
+            tf_path = (Path(temp_dir) / local_path.name).with_suffix(extension)
 
-            with tarfile.open(tf_path, "w:gz") as tf:
+            mode = "w:gz" if gzip else "w"
+            with tarfile.open(tf_path, mode) as tf:
                 tf.add(local_path, arcname=local_path.name)
 
             metadata = self.upload_file(tf_path, folder)
@@ -218,12 +219,12 @@ class DriveService:
 
         return metadata
 
-    def upload_file(self, local_path: pathlib.Path, folder: Dict[str, str]) -> Dict[str, Any]:
+    def upload_file(self, local_path: Path, folder: Dict[str, str]) -> Dict[str, Any]:
         """
         Upload a file to Google Drive.
 
         Args:
-            local_path (pathlib.Path): Path to the local file.
+            local_path (Path): Path to the local file.
             folder (Dict[str, str]): Metadata of the destination folder in Google Drive.
         """
         return self.create_or_update_file(folder, local_path)
@@ -284,18 +285,18 @@ class DriveService:
             return items[0]
         return None
 
-    def create_or_update_file(self, parent: Dict[str, str], local_path: pathlib.Path) -> Dict[str, Any]:
+    def create_or_update_file(self, parent: Dict[str, str], local_path: Path) -> Dict[str, Any]:
         """
         Create or update a file in Google Drive.
 
         Args:
             parent (Dict[str, str]): Metadata of the parent folder.
-            local_path (pathlib.Path): Path to the local file.
+            local_path (Path): Path to the local file.
 
         Returns:
             Dict[str, Any]: Metadata of the created or updated file.
         """
-        local_path = pathlib.Path(local_path)
+        local_path = Path(local_path)
         dfile = self.get_file(parent, local_path.name)
         media = MediaFileUpload(local_path, resumable=True)
         if dfile:
@@ -345,14 +346,14 @@ def main() -> None:
     if args.check:
         return
     if args.upload:
-        target_directory = pathlib.Path(args.upload_directory).parts if args.upload_directory else []
+        target_directory = Path(args.upload_directory).parts if args.upload_directory else []
         if args.upload_archive:
             dest = service.get_or_create_subfolders(service.root_folder, *target_directory)
             service.upload_hierarchy_from_archive(args.upload_archive, dest)
         elif args.upload_local_directory:
             dest = service.get_or_create_subfolders(service.root_folder, *target_directory)
             if args.archive:
-                service.archive_and_upload(pathlib.Path(args.upload_local_directory), dest)
+                service.archive_and_upload(Path(args.upload_local_directory), dest)
             else:
                 service.upload_hierarchy(args.upload_root, dest, args.upload_local_directory)
         elif args.upload_file:
@@ -393,7 +394,7 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
     group.add_argument("--upload", action="store_true", help="Upload files.", default=False)
     upload_group = parser.add_argument_group("Upload options")
     upload_variants = upload_group.add_mutually_exclusive_group()
-    upload_variants.add_argument("--upload-archive", type=pathlib.Path, help="Path to the file to upload.")
+    upload_variants.add_argument("--upload-archive", type=Path, help="Path to the file to upload.")
     parser.add_argument(
         "--upload-directory",
         type=str,
@@ -418,7 +419,7 @@ def get_parser(parser: ArgumentParser) -> ArgumentParser:
     )
     upload_group.add_argument(
         "--upload-file",
-        type=pathlib.Path,
+        type=Path,
         help="Path to the file to upload.",
     )
     upload_group.add_argument(
