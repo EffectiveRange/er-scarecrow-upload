@@ -68,49 +68,29 @@ def _parse_filename_timestamp(filename: str) -> Optional[datetime]:
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=10000, retry_on_exception=log_before_retry)
 def collect_event_blob(logger: Logger, ssh_alias: str, event_id: str, timeout: int,
-                       remote_directory: str, local_directory: str, extension: str = ".tar.gz") -> Path | None:
-    try:
-        with Connection(ssh_alias, connect_timeout=timeout) as connection:
-            filename = f"{event_id}{extension}"
-            result = connection.run(
-                f"find {shlex.quote(remote_directory)} -maxdepth 1 -type f -name {shlex.quote(filename)}",
-                hide=True,
-                warn=True,
-            )
+                       remote_directory: Path, local_directory: Path, extension: str = ".tar.gz") -> Path:
+    with Connection(ssh_alias, connect_timeout=timeout) as connection:
+        filename = f"{event_id}{extension}"
+        remote_file_path = remote_directory / filename
+        local_file_path = local_directory / filename
+        logger.info(f"ℹ️  Downloading file '{remote_file_path}' from host '{ssh_alias}' to '{local_file_path}'...")
 
-            if not result or not result.ok or not result.stdout.strip():
-                logger.warning(f"❌  No file named '{filename}' found on host '{ssh_alias}'")
-                return None
+        os.makedirs(local_directory, exist_ok=True)
 
-            os.makedirs(local_directory, exist_ok=True)
+        command = [
+            "rsync",
+            "-avz",
+            "--partial",
+            "--append-verify",
+            f"{ssh_alias}:{remote_file_path}",
+            str(local_file_path),
+        ]
+        subprocess.run(command, check=True)
 
-            remote_file_path = result.stdout.splitlines()[0]
-            local_path = Path(local_directory) / filename
-            logger.info(f"ℹ️  Downloading file '{remote_file_path}' from host '{ssh_alias}' to '{local_path}'...")
+        logger.info(f"✅  Downloaded file {remote_file_path} from host '{ssh_alias}' to {local_file_path}")
+        connection.run(f"sudo rm -- {shlex.quote(str(remote_file_path))}", warn=True)
 
-            command = [
-                "rsync",
-                "-avz",
-                "--partial",
-                "--append-verify",
-                f"{ssh_alias}:{remote_file_path}",
-                str(local_path),
-            ]
-            try:
-                subprocess.run(command, check=True)
-            except subprocess.CalledProcessError as error:
-                logger.warning(
-                    f"❌  Download failed for file '{remote_file_path}' from host '{ssh_alias}': {error}"
-                )
-                return None
-
-            logger.info(f"✅  Downloaded file {remote_file_path} from host '{ssh_alias}' to {local_path}")
-            connection.run(f"sudo rm -- {shlex.quote(remote_file_path)}", warn=True)
-
-            return local_path
-    except Exception as error:
-        logger.warning(f"❌  Could not connect to host '{ssh_alias}' or access remote file: {error}")
-        return None
+        return local_file_path
 
 
 @retrying.retry(stop_max_attempt_number=3, wait_fixed=5000, retry_on_exception=log_before_retry)
@@ -347,8 +327,8 @@ def main() -> None:
                 ssh_alias,
                 args.event_id,
                 args.timeout,
-                args.remote_directory,
-                args.local_directory,
+                Path(args.remote_directory),
+                Path(args.local_directory),
             )
         elif args.archive:
             download_and_archive_files(
