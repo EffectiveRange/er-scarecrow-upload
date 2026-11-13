@@ -26,6 +26,6 @@ setup(
         "pytz",
         "retrying",
         "tenacity",
-        "python-context-logger@git+https://github.com/EffectiveRange/python-context-logger.git@latest",
+        "python-context-logger@git+https://github.com/EffectiveRange/python-context-logger.git@v1.3.2",
     ],
 )
